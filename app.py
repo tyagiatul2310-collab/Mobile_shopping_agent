@@ -6,6 +6,9 @@ from src.config import DB_PATH, CSV_PATH
 from src.services import resources
 from src.tabs import query_tab, comparison_tab
 from src.styles import APP_CSS, HEADER_HTML, SIDEBAR_HEADER_HTML, get_filter_section_html
+from src.utils.logger import get_logger, log_timing
+
+logger = get_logger(__name__)
 
 
 # Page configuration
@@ -18,29 +21,42 @@ st.set_page_config(
 
 # Auto-initialize database if it doesn't exist (first-time setup)
 if not os.path.exists(DB_PATH):
+    logger.info("Database not found, initializing from CSV")
     if os.path.exists(CSV_PATH):
         with st.spinner("🔄 Initializing database (first time setup)..."):
             try:
-                resources.db.create_from_csv()
+                with log_timing("Database initialization"):
+                    resources.db.create_from_csv()
+                logger.info("Database initialized successfully")
                 st.success("✅ Database initialized successfully!")
                 st.rerun()
             except Exception as e:
+                logger.error(f"Failed to initialize database: {e}", exc_info=True)
                 st.error(f"❌ Failed to initialize database: {e}")
                 st.stop()
     else:
+        logger.error(f"CSV file not found at {CSV_PATH}")
         st.error(f"❌ CSV file not found at {CSV_PATH}. Please ensure the data file exists.")
         st.stop()
+else:
+    logger.debug("Database already exists")
 
 # Apply custom CSS
 st.markdown(APP_CSS, unsafe_allow_html=True)
 st.markdown(HEADER_HTML, unsafe_allow_html=True)
 
 # Get metadata from database
-db = resources.db
-price_min_range, price_max_range = db.get_price_range()
-camera_min_range, camera_max_range = db.get_camera_range()
-battery_min_range, battery_max_range = db.get_battery_range()
-companies = db.get_companies()
+logger.debug("Loading metadata from database")
+with log_timing("Load metadata"):
+    db = resources.db
+    price_min_range, price_max_range = db.get_price_range()
+    camera_min_range, camera_max_range = db.get_camera_range()
+    battery_min_range, battery_max_range = db.get_battery_range()
+    companies = db.get_companies()
+    logger.info(f"Loaded metadata: {len(companies)} companies, "
+               f"price range: {price_min_range}-{price_max_range}, "
+               f"camera range: {camera_min_range}-{camera_max_range}, "
+               f"battery range: {battery_min_range}-{battery_max_range}")
 
 # Sidebar filters
 with st.sidebar:
@@ -110,6 +126,7 @@ with st.sidebar:
 
     # Reset Button
     if st.button("🔄 Reset All Filters", use_container_width=True):
+        logger.info("Resetting all filters")
         st.session_state.company_filter = None
         st.session_state.price_filter_check = False
         st.session_state.camera_filter_check = False
@@ -137,7 +154,10 @@ filters = {
     "battery_max": battery_max,
 }
 
+logger.debug(f"Active filters: {filters}")
+
 # Render tabs
+logger.debug("Rendering application tabs")
 tab1, tab2 = st.tabs(["💬 AI Chat Assistant", "⚖️ Phone Comparison"])
 
 with tab1:

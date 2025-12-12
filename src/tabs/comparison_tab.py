@@ -3,6 +3,9 @@ import streamlit as st
 from typing import Dict
 
 from src.services import resources
+from src.utils.logger import get_logger, log_timing
+
+logger = get_logger(__name__)
 
 
 def render(filters: Dict):
@@ -25,16 +28,20 @@ def render(filters: Dict):
         st.session_state.num_phones = 2
 
     # Get filtered phones from database
+    logger.debug(f"Getting filtered phones with filters: {filters}")
     db = resources.db
-    filtered_phones = db.get_filtered_phones(
-        company=filters.get("company"),
-        price_min=filters.get("price_min"),
-        price_max=filters.get("price_max"),
-        camera_min=filters.get("camera_min"),
-        camera_max=filters.get("camera_max"),
-        battery_min=filters.get("battery_min"),
-        battery_max=filters.get("battery_max"),
-    )
+    
+    with log_timing("Get filtered phones for comparison"):
+        filtered_phones = db.get_filtered_phones(
+            company=filters.get("company"),
+            price_min=filters.get("price_min"),
+            price_max=filters.get("price_max"),
+            camera_min=filters.get("camera_min"),
+            camera_max=filters.get("camera_max"),
+            battery_min=filters.get("battery_min"),
+            battery_max=filters.get("battery_max"),
+        )
+        logger.info(f"Retrieved {len(filtered_phones)} filtered phones for comparison")
 
     if not filtered_phones:
         st.warning("🔍 No phones found matching your filters. Try adjusting the sidebar filters.")
@@ -98,12 +105,16 @@ def render(filters: Dict):
     # Compare button
     if len(selected_phones) >= 2:
         if st.button("🔍 Compare Selected Phones", type="primary", use_container_width=True):
+            logger.info(f"Comparing {len(selected_phones)} phones: {selected_phones}")
             with st.spinner("📊 Analyzing phones..."):
-                df = db.get_phone_data(selected_phones)
+                with log_timing("Phone comparison"):
+                    df = db.get_phone_data(selected_phones)
+                    logger.info(f"Retrieved data for {len(df)} phone record(s)")
 
             if not df.empty:
                 _display_comparison(df, selected_phones)
             else:
+                logger.warning("No data found for selected phones")
                 st.error("❌ No data found for selected phones.")
 
     elif len(selected_phones) == 1:

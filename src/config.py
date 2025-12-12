@@ -1,6 +1,11 @@
 import os
 from dotenv import load_dotenv
+from src.utils.logger import setup_logging
+
 load_dotenv()
+
+# Initialize logging
+logger = setup_logging(log_level="INFO", log_file="logs/app.log")
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")

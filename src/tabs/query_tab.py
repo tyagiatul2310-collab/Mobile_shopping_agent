@@ -4,6 +4,9 @@ import streamlit as st
 from typing import Dict, Any
 
 from src.services import resources
+from src.utils.logger import get_logger, log_timing
+
+logger = get_logger(__name__)
 
 
 MAX_HISTORY = 5
@@ -94,19 +97,24 @@ def _display_chat_history():
 
 def _process_query(user_query: str, filters: Dict) -> Dict[str, Any]:
     """Process query using QueryProcessor with status updates."""
+    logger.info(f"Processing user query: {user_query[:100]}")
+    
     status_messages = []
 
     def on_status(msg: str):
         status_messages.append(msg)
 
     with st.status("🚀 Processing your query...", expanded=True) as status:
-        # Use QueryProcessor
-        response = resources.query_processor.process(
-            user_query,
-            filters,
-            on_status=lambda msg: status.write(f"✅ {msg}"),
-        )
-        status.update(label="✨ Complete!", state="complete")
+        with log_timing("Query processing"):
+            # Use QueryProcessor
+            response = resources.query_processor.process(
+                user_query,
+                filters,
+                on_status=lambda msg: status.write(f"✅ {msg}"),
+            )
+            status.update(label="✨ Complete!", state="complete")
+            logger.info(f"Query processing completed. Task: {response.get('task')}, "
+                       f"Results: {len(response.get('results', [])) if response.get('results') is not None else 0}")
 
     return response
 
@@ -163,6 +171,7 @@ def render(filters: Dict):
 
     # Handle clear
     if clear:
+        logger.info("Clearing chat history and cache")
         st.session_state.chat_history = []
         st.session_state.query_cache = {}
         st.session_state.pending_query = None
@@ -180,6 +189,7 @@ def render(filters: Dict):
 
     # Process new query
     if submit and user_query:
+        logger.info(f"New query submitted: {user_query[:100]}")
         st.session_state.current_response = None
         st.session_state.current_query = user_query
 
@@ -194,9 +204,11 @@ def render(filters: Dict):
 
         with st.chat_message("assistant"):
             if cached:
+                logger.info("Using cached response")
                 st.caption("⚡ *Cached response*")
                 response_data = cached
             else:
+                logger.info("Processing new query (not cached)")
                 response_data = _process_query(user_query, filters)
                 st.session_state.query_cache[cache_key] = response_data
 
