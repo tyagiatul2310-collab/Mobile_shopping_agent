@@ -1,6 +1,8 @@
 """PhoneGenie - AI-Powered Mobile Shopping Assistant."""
+import os
 import streamlit as st
 
+from src.config import DB_PATH, CSV_PATH
 from src.services import resources
 from src.tabs import query_tab, comparison_tab
 from src.styles import APP_CSS, HEADER_HTML, SIDEBAR_HEADER_HTML, get_filter_section_html
@@ -13,6 +15,21 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# Auto-initialize database if it doesn't exist (first-time setup)
+if not os.path.exists(DB_PATH):
+    if os.path.exists(CSV_PATH):
+        with st.spinner("🔄 Initializing database (first time setup)..."):
+            try:
+                resources.db.create_from_csv()
+                st.success("✅ Database initialized successfully!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Failed to initialize database: {e}")
+                st.stop()
+    else:
+        st.error(f"❌ CSV file not found at {CSV_PATH}. Please ensure the data file exists.")
+        st.stop()
 
 # Apply custom CSS
 st.markdown(APP_CSS, unsafe_allow_html=True)
