@@ -7,6 +7,7 @@ from src.services.llm_client import LLMClient
 from src.services.db_client import DatabaseClient
 from src.services.vector_client import VectorClient
 from src.utils.logger import log_function_call, log_timing, get_logger
+from src.utils.error_handler import APIErrorHandler
 
 logger = get_logger(__name__)
 
@@ -64,7 +65,11 @@ class QueryProcessor:
 
             if intent.get("error"):
                 logger.error(f"Intent parsing failed: {intent.get('error')}")
-                result["content"] = "❌ **Oops!** I couldn't process your query right now. Please try again in a moment, or rephrase your question."
+                # Use user-friendly error message if available
+                error_message = intent.get("error_message")
+                if not error_message:
+                    error_message = APIErrorHandler.get_user_friendly_message(intent.get("error", {}))
+                result["content"] = error_message
                 return result
 
             # Extract entities and apply corrections
@@ -107,7 +112,11 @@ class QueryProcessor:
             logger.debug(f"Step 4: Executing task: {task}")
             if task == "general_qa":
                 status("✨ Generating detailed explanation...")
-                result["content"] = self.llm.answer_general(corrected_query)
+                answer, error_info = self.llm.answer_general(corrected_query)
+                if error_info:
+                    result["content"] = APIErrorHandler.get_user_friendly_message(error_info)
+                else:
+                    result["content"] = answer
 
             elif task == "query":
                 status("🗄️ Searching our phone database...")
@@ -287,10 +296,15 @@ class QueryProcessor:
                 }
                 self._normalize_intent(single_intent)
 
-                sql_query = self.llm.generate_sql(single_intent)
+                sql_query, sql_error = self.llm.generate_sql(single_intent)
+                if sql_error:
+                    logger.warning(f"SQL generation failed for {model_name}: {sql_error.get('type')}")
+                    status(f"⚠️ Couldn't generate query for {model_name}")
+                    continue
+                
                 all_sqls.append(f"-- {model_name}\n{sql_query}")
 
-                if sql_query.strip().lower().startswith("select"):
+                if sql_query and sql_query.strip().lower().startswith("select"):
                     try:
                         df = self.db.query(sql_query)
                         if not df.empty:
@@ -312,7 +326,11 @@ class QueryProcessor:
                 logger.info(f"Combined results: {len(df)} phones")
 
                 status("📝 Creating detailed comparison...")
-                result["content"] = self.llm.summarize(query, df)
+                summary, summary_error = self.llm.summarize(query, df)
+                if summary_error:
+                    result["content"] = APIErrorHandler.get_user_friendly_message(summary_error)
+                else:
+                    result["content"] = summary
             else:
                 logger.warning("No data found for any of the requested models")
                 result["content"] = "😔 **Sorry, I couldn't find those phones in our database.**\n\n**Try:**\n- Check the spelling of model names\n- Use the sidebar filters to browse available phones\n- Ask for recommendations instead (e.g., 'Best phone under ₹50,000')"
@@ -326,12 +344,18 @@ class QueryProcessor:
         logger.debug("Processing single query")
         
         with log_timing("Single query processing"):
-            sql_query = self.llm.generate_sql(intent)
+            sql_query, sql_error = self.llm.generate_sql(intent)
+            
+            if sql_error:
+                logger.error(f"SQL generation failed: {sql_error.get('type')}")
+                result["content"] = APIErrorHandler.get_user_friendly_message(sql_error)
+                return result
+            
             result["sql"] = sql_query
 
-            if not sql_query.strip().lower().startswith("select"):
+            if not sql_query or not sql_query.strip().lower().startswith("select"):
                 logger.warning("Generated SQL is not a SELECT query")
-                result["content"] = "❌ **Sorry, I couldn't generate a proper search query.** Please try rephrasing your question or use the sidebar filters to browse phones."
+                result["content"] = "⚠️ **Sorry, I couldn't generate a proper search query.** Please try rephrasing your question or use the sidebar filters to browse phones."
                 return result
 
             try:
@@ -347,11 +371,15 @@ class QueryProcessor:
                 logger.info(f"Query returned {len(df)} results")
 
                 status("📝 Creating detailed comparison...")
-                result["content"] = self.llm.summarize(query, df)
+                summary, summary_error = self.llm.summarize(query, df)
+                if summary_error:
+                    result["content"] = APIErrorHandler.get_user_friendly_message(summary_error)
+                else:
+                    result["content"] = summary
 
             except Exception as e:
                 logger.error(f"Error processing single query: {e}", exc_info=True)
-                result["content"] = f"❌ **Oops!** Something went wrong while searching. Please try again or rephrase your query."
+                result["content"] = f"⚠️ **Oops!** Something went wrong while searching. Please try again or rephrase your query."
 
             return result
 

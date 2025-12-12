@@ -3,7 +3,7 @@ import json
 import re
 import requests
 import pandas as pd
-from typing import Optional
+from typing import Optional, Tuple, Dict, Any
 
 from src.config import (
     GEMINI_API_KEY,
@@ -15,6 +15,7 @@ from src.config import (
 )
 from src.prompts import INTENT_PROMPT, NL2SQL_PROMPT, SUMMARY_PROMPT, GENERAL_QA_PROMPT
 from src.utils.logger import log_function_call, log_timing, get_logger
+from src.utils.error_handler import APIErrorHandler
 
 logger = get_logger(__name__)
 
@@ -27,18 +28,36 @@ class LLMClient:
         logger.info("LLMClient initialized")
 
     @log_function_call
-    def _post(self, url: str, payload: dict) -> dict:
-        """Make POST request to Gemini API."""
-        with log_timing(f"POST request to {url.split('/')[-1]}"):
+    def _post(self, url: str, payload: dict) -> Tuple[Optional[dict], Optional[Dict[str, Any]]]:
+        """Make POST request to Gemini API with error handling.
+        
+        Returns:
+            Tuple of (result, error_info). error_info is None on success.
+        """
+        def make_request():
             resp = requests.post(
                 f"{url}?key={self.api_key}",
                 headers={"Content-Type": "application/json"},
                 data=json.dumps(payload),
+                timeout=30,  # 30 second timeout
             )
             resp.raise_for_status()
-            result = resp.json()
-            logger.debug(f"API response status: {resp.status_code}")
-            return result
+            return resp.json()
+        
+        with log_timing(f"POST request to {url.split('/')[-1]}"):
+            result, error_info = APIErrorHandler.handle_with_retry(
+                make_request,
+                max_retries=2,
+                retry_delay=2.0,
+                retry_on_rate_limit=True
+            )
+            
+            if result:
+                logger.debug(f"API request successful")
+                return result, None
+            else:
+                logger.warning(f"API request failed: {error_info.get('type') if error_info else 'Unknown'}")
+                return None, error_info
 
     def _extract_text(self, response: dict) -> str:
         """Extract text from Gemini response."""
@@ -69,10 +88,17 @@ class LLMClient:
                 "Refusal_Reason": "",
             }
 
+            result, error_info = self._post(get_gemini_url(GEMINI_FLASH), payload)
+            
+            if error_info:
+                logger.error(f"Intent parse error: {error_info.get('type')}")
+                default_response["error"] = error_info
+                default_response["error_message"] = APIErrorHandler.get_user_friendly_message(error_info)
+                return default_response
+            
             try:
-                result = self._post(get_gemini_url(GEMINI_FLASH), payload)
                 text = self._extract_text(result)
-
+                
                 # Extract JSON from response
                 start = text.find("{")
                 end = text.rfind("}") + 1
@@ -87,9 +113,10 @@ class LLMClient:
                           f"{len(parsed.get('entities', {}).get('models', []))} models")
                 return parsed
 
-            except Exception as e:
-                logger.error(f"Intent parse error: {e}", exc_info=True)
-                default_response["error"] = str(e)
+            except (KeyError, IndexError, json.JSONDecodeError) as e:
+                logger.error(f"Error parsing intent response: {e}", exc_info=True)
+                default_response["error"] = {"type": "invalid_response", "message": "Invalid response format"}
+                default_response["error_message"] = "⚠️ **Response Format Error**\n\nI received an unexpected response format. Please try again."
                 return default_response
 
     @log_function_call
@@ -105,16 +132,24 @@ class LLMClient:
                 "generationConfig": {"temperature": 0, "maxOutputTokens": 5048},
             }
 
+            result, error_info = self._post(get_gemini_url(GEMINI_PRO), payload)
+            
+            if error_info:
+                logger.error(f"SQL generation error: {error_info.get('type')}")
+                return None, error_info
+            
             try:
-                result = self._post(get_gemini_url(GEMINI_PRO), payload)
                 sql_query = self._extract_text(result).strip()
                 normalized_sql = self._normalize_sql_case(sql_query)
                 logger.info(f"SQL generated successfully. Length: {len(normalized_sql)} chars")
                 logger.debug(f"Generated SQL: {normalized_sql[:200]}...")
-                return normalized_sql
-            except Exception as e:
-                logger.error(f"SQL generation error: {e}", exc_info=True)
-                return f"-- SQL generation failed: {e}"
+                return normalized_sql, None
+            except (KeyError, IndexError) as e:
+                logger.error(f"Error parsing SQL response: {e}", exc_info=True)
+                return None, {
+                    "type": "invalid_response",
+                    "message": "⚠️ **Response Format Error**\n\nI received an unexpected response format. Please try again."
+                }
 
     @log_function_call
     def summarize(self, user_query: str, df: pd.DataFrame) -> str:
@@ -144,16 +179,24 @@ class LLMClient:
                 "generationConfig": {"temperature": 0.2},
             }
 
+            result, error_info = self._post(get_gemini_url(GEMINI_FLASH), payload)
+            
+            if error_info:
+                logger.error(f"Summary generation error: {error_info.get('type')}")
+                return None, error_info
+            
             try:
-                result = self._post(get_gemini_url(GEMINI_FLASH), payload)
                 summary = self._extract_text(result)
                 buy_links = self._generate_buy_links(df_limited)
                 final_summary = summary + buy_links
                 logger.info(f"Summary generated successfully. Length: {len(final_summary)} chars")
-                return final_summary
-            except Exception as e:
-                logger.error(f"Summary generation error: {e}", exc_info=True)
-                return f"Summary Error: {e}"
+                return final_summary, None
+            except (KeyError, IndexError) as e:
+                logger.error(f"Error parsing summary response: {e}", exc_info=True)
+                return None, {
+                    "type": "invalid_response",
+                    "message": "⚠️ **Response Format Error**\n\nI received an unexpected response format. Please try again."
+                }
 
     @log_function_call
     def answer_general(self, user_query: str) -> str:
@@ -168,14 +211,22 @@ class LLMClient:
                 "generationConfig": {"temperature": 0.4},
             }
 
+            result, error_info = self._post(get_gemini_url(GEMINI_FLASH), payload)
+            
+            if error_info:
+                logger.error(f"General QA error: {error_info.get('type')}")
+                return None, error_info
+            
             try:
-                result = self._post(get_gemini_url(GEMINI_FLASH), payload)
                 answer = self._extract_text(result)
                 logger.info(f"General QA answered successfully. Length: {len(answer)} chars")
-                return answer
-            except Exception as e:
-                logger.error(f"General QA error: {e}", exc_info=True)
-                return f"Error: {e}"
+                return answer, None
+            except (KeyError, IndexError) as e:
+                logger.error(f"Error parsing general QA response: {e}", exc_info=True)
+                return None, {
+                    "type": "invalid_response",
+                    "message": "⚠️ **Response Format Error**\n\nI received an unexpected response format. Please try again."
+                }
 
     @log_function_call
     def embed(self, text: str) -> Optional[list]:

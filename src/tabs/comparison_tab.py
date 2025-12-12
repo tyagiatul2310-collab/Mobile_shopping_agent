@@ -115,7 +115,7 @@ def render(filters: Dict):
                 _display_comparison(df, selected_phones)
             else:
                 logger.warning("No data found for selected phones")
-                st.error("❌ No data found for selected phones.")
+                st.warning("⚠️ No data found for selected phones. Please try selecting different phones or check the spelling.")
 
     elif len(selected_phones) == 1:
         st.info("👆 Select at least 2 phones to compare")
